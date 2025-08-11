@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no" />
+<title>Field Treatment Map</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+  html, body, #map { height: 100%; margin: 0; }
+  .topbar {
+    position: absolute; z-index: 1000; left: 10px; top: 10px;
+    background: #fff; padding: 8px 10px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,.15);
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+  }
+  button, select { font-size: 14px; }
+  .popup-row { margin: 6px 0; }
+  .popup-row label { display:block; font-size:12px; color:#333; margin-bottom:2px; }
+  .popup-row select { width:100%; padding:6px; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div class="topbar">
+  <button id="downloadCsvBtn">Download CSV</button>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const WEB_APP_URL = https://script.google.com/macros/s/AKfycbxd-3-tsZxow_0cp73WxwwnxeCxpTxE9NkZL5dWPzoOd1rlmRXeWKjT9rfhXAcKlRW3/exec; // <-- paste your Apps Script Web App URL
+
+const TREATMENTS = [
+  'Slurry Seal',
+  'Double Slurry Seal',
+  'SS with BRs',
+  'RCS',
+  'RCS with BRs',
+  'MLT',
+  'Mill and Overlay',
+  'Mill & Thick Overlay',
+  'CIR',
+  'FDR/SR'
+];
+
+const PCT_OPTIONS = ['2','4','5','8','10','15','20','> 25'];
+
+function colorForTreatment(t) {
+  if (!t) return '#666666';
+  const idx = TREATMENTS.findIndex(x => x === t);
+  if (idx === -1) return '#666666';
+  return (idx <= 5) ? '#e31a1c' : '#fb9a99';
+}
+
+const map = L.map('map', { tap: true }).setView([37.7, -121.9], 12);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 22,
+  attribution: '&copy; OpenStreetMap'
+}).addTo(map);
+
+let selectionsByKey = new Map();
+function keyFor(feature) {
+  const p = feature.properties || {};
+  return `${p.StreetID}__${p.SectionID}`;
+}
+function styleFeature(feature) {
+  const k = keyFor(feature);
+  const row = selectionsByKey.get(k) || {};
+  const t = row.Treatment || '';
+  return { color: colorForTreatment(t), weight: 4, opacity: 1 };
+}
+function buildSelect(id, options, currentValue) {
+  const sel = document.createElement('select');
+  sel.id = id;
+  const blank = document.createElement('option');
+  blank.value = ''; blank.textContent = '—';
+  sel.appendChild(blank);
+  for (const opt of options) {
+    const o = document.createElement('option');
+    o.value = opt; o.textContent = opt;
+    if (opt === currentValue) o.selected = true;
+    sel.appendChild(o);
+  }
+  return sel;
+}
+function makePopupContent(feature, layer) {
+  const p = feature.properties || {};
+  const k = keyFor(feature);
+  const row = selectionsByKey.get(k) || {};
+  const wrapper = document.createElement('div');
+
+  const h = document.createElement('div');
+  h.style.fontWeight = '600'; h.style.marginBottom = '6px';
+  h.textContent = `${p.StreetName || ''} — ${p.StreetID || ''}/${p.SectionID || ''}`;
+  wrapper.appendChild(h);
+
+  const tr = document.createElement('div'); tr.className = 'popup-row';
+  const tl = document.createElement('label'); tl.textContent = 'Treatment';
+  const tSel = buildSelect('treatment', TREATMENTS, row.Treatment || '');
+  tr.appendChild(tl); tr.appendChild(tSel); wrapper.appendChild(tr);
+
+  const br = document.createElement('div'); br.className = 'popup-row';
+  const brl = document.createElement('label'); brl.textContent = 'BR%';
+  const brSel = buildSelect('brpct', PCT_OPTIONS, row.BRpct || '');
+  br.appendChild(brl); br.appendChild(brSel); wrapper.appendChild(br);
+
+  const sr = document.createElement('div'); sr.className = 'popup-row';
+  const srl = document.createElement('label'); srl.textContent = 'SR%';
+  const srSel = buildSelect('srpct', PCT_OPTIONS, row.SRpct || '');
+  sr.appendChild(srl); sr.appendChild(srSel); wrapper.appendChild(sr);
+
+  const save = async () => {
+    const payload = {
+      StreetID: String(p.StreetID ?? ''),
+      SectionID: String(p.SectionID ?? ''),
+      StreetName: String(p.StreetName ?? ''),
+      Treatment: tSel.value || '',
+      BRpct: brSel.value || '',
+      SRpct: srSel.value || ''
+    };
+    try {
+      await fetch(WEB_APP_URL, {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify(payload)
+      });
+      selectionsByKey.set(`${payload.StreetID}__${payload.SectionID}`, payload);
+      layer.setStyle(styleFeature(feature));
+    } catch (e) {
+      alert('Save failed. Check network or Apps Script permissions.');
+      console.error(e);
+    }
+  };
+  tSel.addEventListener('change', save);
+  brSel.addEventListener('change', save);
+  srSel.addEventListener('change', save);
+
+  return wrapper;
+}
+
+let geoLayer;
+async function loadSelections() {
+  try {
+    const res = await fetch(WEB_APP_URL + '?mode=read');
+    const rows = await res.json();
+    selectionsByKey.clear();
+    for (const r of rows) {
+      const k = `${r.StreetID}__${r.SectionID}`;
+      selectionsByKey.set(k, r);
+    }
+  } catch (e) {
+    console.warn('Could not load selections yet:', e);
+  }
+}
+async function init() {
+  await loadSelections();
+  const gjRes = await fetch('segments.geojson');
+  const gj = await gjRes.json();
+  geoLayer = L.geoJSON(gj, {
+    style: styleFeature,
+    onEachFeature: (feature, layer) => {
+      layer.bindPopup(() => makePopupContent(feature, layer), { maxWidth: 260 });
+    }
+  }).addTo(map);
+  try { map.fitBounds(geoLayer.getBounds(), { padding: [20,20] }); } catch(_) {}
+}
+init();
+
+document.getElementById('downloadCsvBtn').addEventListener('click', () => {
+  const url = WEB_APP_URL + '?mode=csv&cacheBust=' + Date.now();
+  window.open(url, '_blank');
+});
+</script>
+</body>
+</html>
